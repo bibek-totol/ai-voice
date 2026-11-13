@@ -14,7 +14,10 @@ const MODEL_PRICING = {
   "gemini-2.5-flash-preview-tts": { inputPer1M: 0.50, audioOutputPer1M: 10.00 },
 };
 
-const apiKey = process.env.GEMINI_API_KEY;
+let apiKey = process.env.GEMINI_API_KEY;
+if (apiKey) {
+  apiKey = apiKey.trim().replace(/^["']|["'];?$/g, "").replace(/;$/, "").trim();
+}
 if (!apiKey) {
   throw new Error("GEMINI_API_KEY is missing. Add your API key to the .env file.");
 }

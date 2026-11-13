@@ -1,4 +1,3 @@
-
 require("dotenv").config();
 
 const { GoogleGenAI, Type } = require("@google/genai");
@@ -10,7 +9,11 @@ const { exec } = require("node:child_process");
 // CONFIGURATION
 // ============================================================================
 
-const API_KEY = process.env.GEMINI_API_KEY;
+let API_KEY = process.env.GEMINI_API_KEY;
+
+if (API_KEY) {
+  API_KEY = API_KEY.trim().replace(/^["']|["'];?$/g, "").replace(/;$/, "").trim();
+}
 
 if (!API_KEY) {
   throw new Error(
@@ -32,6 +35,10 @@ const TTS_MODELS = [
 const GENERATE_VOICE_WAV = true;
 const OPEN_AUDIO_AFTER_GENERATION = true;
 
+// Target word count for a ~1.5 minute (90-second) Bangla voice broadcast
+const MIN_TARGET_WORDS = 200;
+const MAX_TARGET_WORDS = 230;
+
 const DEFAULT_SAMPLE_RATE = 24000;
 const USD_TO_BDT = 122;
 
@@ -52,18 +59,32 @@ const AUDIO_OUTPUT = path.join(
   "demo-dynamic-obd.wav"
 );
 
-// Add current official Gemini pricing here if you want
-// automatic cost calculation. Rates are USD per 1M tokens.
-//
-// Example:
-// const PRICING = {
-//   "gemini-3.8-flash": {
-//     inputPer1M: 0,
-//     outputPer1M: 0
-//   }
-// };
+// Official Gemini API rates (USD per 1M tokens, valid through Dec 31, 2026)
+const PRICING = {
+  // Script Generation Models
+  "gemini-3.8-flash": {
+    inputPer1M: 0.75,
+    outputPer1M: 3.75,
+  },
+  "gemini-3.5-flash-lite": {
+    inputPer1M: 0.30,
+    outputPer1M: 2.50,
+  },
 
-const PRICING = {};
+  // Text-to-Speech (TTS) Models (Audio output = ~25 tokens/sec)
+  "gemini-3.8-flash-lite-tts": {
+    inputPer1M: 0.50,
+    audioOutputPer1M: 6.00,
+  },
+  "gemini-3.8-flash-tts": {
+    inputPer1M: 0.50,
+    audioOutputPer1M: 9.00,
+  },
+  "gemini-2.5-flash-preview-tts": {
+    inputPer1M: 0.50,
+    audioOutputPer1M: 10.00,
+  },
+};
 
 const ai = new GoogleGenAI({
   apiKey: API_KEY,
@@ -73,7 +94,7 @@ const ai = new GoogleGenAI({
 });
 
 // ============================================================================
-// SAMPLE SIX-WEBSITE AGGREGATED DATA
+// SAMPLE SIX-WEBSITE AGGREGATED DATA (ENRICHED FOR 1.5-MINUTE BROADCAST)
 // Replace this object with your real API data.
 // ============================================================================
 
@@ -95,35 +116,38 @@ const sixWebsitesSampleData = {
     rainProbabilityPercent: 78,
     windSpeedKmh: 18,
     skyCondition:
-      "মাঝারি থেকে ভারী মেঘাচ্ছন্ন ও বৃষ্টির সম্ভাবনা",
+      "মাঝারি থেকে ভারী মেঘাচ্ছন্ন ও দমকা হাওয়াসহ বৃষ্টির সম্ভাবনা",
   },
 
   bmdLiveWarnings: {
     hasActiveWarning: true,
     warningType:
-      "দমকা হাওয়াসহ মাঝারি বৃষ্টির সতর্কবার্তা",
+      "দমকা হাওয়াসহ মাঝারি থেকে ভারী বৃষ্টির সতর্কবার্তা",
     outlookSummary:
-      "আগামী ২৪ থেকে ৪৮ ঘণ্টায় রাজশাহী অঞ্চলে বৃষ্টিপাত অব্যাহত থাকতে পারে।",
+      "আগামী ২৪ থেকে ৪৮ ঘণ্টায় রাজশাহী ও আশেপাশের অঞ্চলে থেমে থেমে বৃষ্টিপাত এবং দমকা বাতাস অব্যাহত থাকতে পারে।",
   },
 
   nlasAdvisory: {
     soilMoistureStatus: "অতিরিক্ত আর্দ্র (৮৫%)",
     regionalAdvisoryBn:
-      "নিচু জমির রোপা আমন ও শীতকালীন সবজি ক্ষেতে বৃষ্টির পানি জমতে দেবেন না।",
+      "নিচু জমির রোপা আমন ও শীতকালীন সবজি ক্ষেতে বৃষ্টির পানি জমতে দেবেন না। জমির আইল ও নিষ্কাশন নালা দ্রুত পরিষ্কার করে অতিরিক্ত পানি বের করে দেওয়ার ব্যবস্থা করুন।",
   },
 
   bamisBulletin: {
     cropsCovered: [
-      "রোপা আমন ধান",
-      "শীতকালীন সবজি (ফুলকপি, বাঁধাকপি, টমেটো)",
-      "সরিষা",
+      "রোপা আমন ধান (পাকা ও আধাপাকা পর্যায়)",
+      "শীতকালীন সবজি (ফুলকপি, বাঁধাকপি, টমেটো, বেগুন)",
+      "সরিষা ও ডাল জাতীয় ফসল",
     ],
 
+    cropStageAdviceBn:
+      "আশি শতাংশ পেকে গেলে রোপা আমন ধান দ্রুত কেটে নিরাপদ ও শুকনো স্থানে তুলে রাখুন। সবজি ও সরিষা ক্ষেতে জলাবদ্ধতা রোধে নালা কেটে দিন এবং বৃষ্টির মধ্যে কোনো ধরনের ইউরিয়া সার বা কীটনাশক স্প্রে করা থেকে বিরত থাকুন।",
+
     pestRisk:
-      "মেঘলা ও আর্দ্র আবহাওয়ায় ধানে বাদামী গাছফড়িং ও পাতা মোড়ানো পোকার আক্রমণ বাড়তে পারে।",
+      "মেঘলা ও অতিরিক্ত আর্দ্র আবহাওয়ায় রোপা আমন ধানে বাদামী গাছফড়িং ও পাতা মোড়ানো পোকার আক্রমণ এবং সবজি ক্ষেতে গোড়া পচা রোগের ঝুঁকি বাড়তে পারে। আবহাওয়া পরিষ্কার হলে কৃষি কর্মকর্তার পরামর্শে ব্যবস্থা নিন।",
 
     livestockAdvice:
-      "গবাদি পশু ও হাঁস-মুরগিকে বৃষ্টির ছাঁট থেকে দূরে শুকনো ঘরে রাখুন।",
+      "গবাদি পশু এবং হাঁস-মুরগিকে বৃষ্টির ছাঁট ও ঠান্ডা বাতাস থেকে দূরে শুকনো ও উঁচু ঘরে রাখুন। দানাদার খাদ্য ও খড় যেন বৃষ্টির পানিতে ভিজে ছত্রাক না ধরে সেদিকে বিশেষ খেয়াল রাখুন এবং পশুকে পরিষ্কার বিশুদ্ধ পানি পান করান।",
   },
 
   ffwcFloodStatus: {
@@ -133,7 +157,7 @@ const sixWebsitesSampleData = {
     waterTrend24hCm: "+15",
 
     floodStatusBn:
-      "নদীর পানি বিপদসীমার নিচে থাকলেও বৃষ্টির কারণে গত ২৪ ঘণ্টায় ১৫ সেন্টিমিটার বৃদ্ধি পেয়েছে ও নিচু চরাঞ্চলে জলাবদ্ধতার ঝুঁকি রয়েছে।",
+      "নদীর পানি বর্তমানে বিপদসীমার নিচে থাকলেও উজানের ঢল ও বৃষ্টির কারণে গত ২৪ ঘণ্টায় ১৫ সেন্টিমিটার বৃদ্ধি পেয়েছে। ফলে নদী তীরবর্তী নিচু চরাঞ্চল ও নিম্নাঞ্চলে সাময়িক জলাবদ্ধতার ঝুঁকি রয়েছে।",
   },
 
   aisMonthlyAdvisory: {
@@ -141,7 +165,7 @@ const sixWebsitesSampleData = {
       "খরা প্রবণ এলাকায় নিয়মিত সেচ দিন এবং চারা গজানোর পর ইউরিয়া সার উপরি প্রয়োগ ও কীটনাশক স্প্রে করুন।",
 
     seedbedTipBn:
-      "বীজতলায় পানি জমতে দেবেন না এবং নালা পরিষ্কার রাখুন।",
+      "বোরো ধানের বীজতলা ও শীতকালীন সবজির চারার বেডে পানি জমতে দেবেন না এবং চারপাশের নিষ্কাশন নালা সর্বদা পরিষ্কার রাখুন।",
   },
 };
 
@@ -162,43 +186,43 @@ const obdScriptSchema = {
     greeting: {
       type: Type.STRING,
       description:
-        "Opening greeting in Bangla mentioning district and upazila.",
+        "Warm opening greeting in Bangla mentioning district, upazila, and date.",
     },
 
     weatherSummary: {
       type: Type.STRING,
       description:
-        "Spoken Bangla weather forecast. All numbers must be Bangla words.",
+        "Detailed spoken Bangla weather forecast covering sky condition, rainfall amount, probability, temperature range, humidity, and wind speed. All numbers must be Bangla words.",
     },
 
     alertAndFloodStatus: {
       type: Type.STRING,
       description:
-        "Spoken Bangla weather alert and river status.",
+        "Detailed spoken Bangla weather alert (24-48h outlook) and Padma river water level, danger mark comparison, 24h rise, and char-land waterlogging warning.",
     },
 
     cropAndLivestockAdvisory: {
       type: Type.STRING,
       description:
-        "Actionable Bangla farmer instructions adapted to the forecast.",
+        "Comprehensive, actionable Bangla farmer instructions covering Aman paddy harvesting, winter vegetables, mustard drainage, postponing fertilizer/pesticide sprays, brown planthopper/root-rot vigilance, seedbed care, and livestock/poultry shelter and dry feed protection.",
     },
 
     closing: {
       type: Type.STRING,
       description:
-        "Polite Bangla closing statement.",
+        "Polite Bangla closing statement wishing farmers safety and good harvest.",
     },
 
     fullSpokenScript: {
       type: Type.STRING,
       description:
-        "Complete 130 to 145 word Bangla OBD broadcast script. Start with আসসালামু আলাইকুম। All numbers and units must be written in Bangla words.",
+        "Complete 200 to 230 word Bangla OBD voice broadcast script designed for a 1.5-minute (90-second) audio bulletin. Start with আসসালামু আলাইকুম। All numbers, decimals, and units must be written in Bangla words.",
     },
 
     wordCount: {
       type: Type.NUMBER,
       description:
-        "Approximate whitespace-separated word count.",
+        "Approximate whitespace-separated word count (target: 200 to 230).",
     },
   },
 
@@ -337,8 +361,6 @@ async function callGeminiWithFallback(
           break;
         }
 
-        // Authentication, permission, and invalid-request errors
-        // should not be hidden by trying other models.
         throw error;
       }
     }
@@ -453,14 +475,18 @@ function formatCost(
   const inputTokens =
     usage?.promptTokenCount ?? 0;
 
-  const outputTokens =
+  const candidateTokens =
     usage?.[outputTokenField] ?? 0;
+  const thinkingTokens =
+    usage?.thoughtsTokenCount ?? 0;
+  const outputTokens =
+    candidateTokens + thinkingTokens;
 
   return (
     (inputTokens / 1_000_000) *
-      rates.inputPer1M +
+    rates.inputPer1M +
     (outputTokens / 1_000_000) *
-      rates[outputRateField]
+    rates[outputRateField]
   );
 }
 
@@ -484,11 +510,11 @@ function openAudioFile(filePath) {
 
 async function main() {
   // --------------------------------------------------------------------------
-  // STEP 1: GENERATE BANGLA OBD SCRIPT
+  // STEP 1: GENERATE 1.5-MINUTE BANGLA OBD SCRIPT
   // --------------------------------------------------------------------------
 
   console.log("====================================================");
-  console.log(" STEP 1: GENERATING BANGLA OBD SCRIPT");
+  console.log(" STEP 1: GENERATING 1.5-MINUTE BANGLA OBD SCRIPT");
   console.log("====================================================");
 
   const systemInstruction = `
@@ -496,7 +522,7 @@ You are the Lead Agro-Meteorological Broadcast Editor for Bangladesh.
 
 Analyze the supplied JSON from BMD, BMD-Live, NLAS, BAMIS, FFWC, and AIS.
 
-IMPORTANT RULES:
+IMPORTANT RULES FOR 1.5-MINUTE (90-SECOND) VOICE BROADCAST:
 
 1. WEATHER SAFETY HAS PRIORITY:
    If rain probability is above 50%, rainfall is significant,
@@ -505,39 +531,42 @@ IMPORTANT RULES:
    or spray pesticides.
 
    Instead, advise farmers to clear drainage channels,
-   prevent waterlogging, and postpone fertilizer or pesticide
-   spraying until weather conditions improve.
+   prevent waterlogging, harvest mature Aman paddy safely,
+   and postpone fertilizer or pesticide spraying until skies clear.
 
 2. Use only facts present in the supplied data.
    Do not invent warnings, measurements, river conditions,
    or crop problems.
 
-3. Write natural, clear, spoken Bangla suitable for
-   a telephone OBD broadcast.
+3. Write natural, clear, well-paced spoken Bangla suitable for
+   a 1.5-minute (90-second) telephone OBD voice broadcast.
 
 4. Write every number, decimal, percentage, and unit
    in Bangla words.
 
    Do not leave Arabic numerals, English numerals,
-   or symbols such as %, mm, cm, °C, or km/h
+   or symbols such as %, mm, cm, m, °C, or km/h
    in the spoken script.
 
-5. The fullSpokenScript must contain approximately
-   130 to 145 whitespace-separated words.
+5. LENGTH REQUIREMENT FOR 1.5 MINUTES:
+   The fullSpokenScript MUST contain between ${MIN_TARGET_WORDS} and ${MAX_TARGET_WORDS}
+   whitespace-separated Bangla words.
+   To achieve this naturally without repetition, thoroughly cover:
+   - Greeting with district, upazila, and forecast date in Bangla words.
+   - Complete weather breakdown (sky condition, max/min temperature, humidity, wind speed, rain probability, expected rainfall in mm).
+   - Active 24-48 hour weather warning and Padma river status (current level, danger level, 24-hour water rise, and low-lying char area risk).
+   - Detailed crop-by-crop guidance (ripening Aman paddy harvest & storage, cauliflower/cabbage/tomato/eggplant drainage, mustard care, seedbed drainage, and postponing urea/pesticide application).
+   - Pest & disease vigilance (brown planthopper, leaf folder, root rot) after rain subsides.
+   - Detailed livestock and poultry care (dry shelter from wind/rain, protecting straw and feed from dampness/mold, clean drinking water).
+   - Warm, encouraging closing statement.
 
 6. Start fullSpokenScript exactly with:
    "আসসালামু আলাইকুম।"
 
-7. Mention the target district and upazila.
+7. Routine AIS monthly advice to irrigate or spray must not override
+   current wet-weather warnings.
 
-8. Mention relevant weather, active warning,
-   river status, crop advice, and livestock advice
-   when those data are present.
-
-9. Routine AIS monthly advice must not override
-   current weather warnings.
-
-10. Return only JSON matching the provided schema.
+8. Return only JSON matching the provided schema.
 `;
 
   const scriptStart = Date.now();
@@ -567,7 +596,7 @@ IMPORTANT RULES:
       responseMimeType: "application/json",
       responseSchema: obdScriptSchema,
 
-      temperature: 0.2,
+      temperature: 0.25,
     }
   );
 
@@ -643,7 +672,8 @@ IMPORTANT RULES:
     scriptUsage.promptTokenCount ?? 0;
 
   const scriptOutputTokens =
-    scriptUsage.candidatesTokenCount ?? 0;
+    (scriptUsage.candidatesTokenCount ?? 0) +
+    (scriptUsage.thoughtsTokenCount ?? 0);
 
   const scriptTotalTokens =
     scriptUsage.totalTokenCount ??
@@ -661,13 +691,13 @@ IMPORTANT RULES:
     generatedData.conflictResolutionNote
   );
 
-  console.log("\n--- GENERATED BANGLA OBD SCRIPT ---");
+  console.log("\n--- GENERATED 1.5-MINUTE BANGLA OBD SCRIPT ---");
 
   console.log(
     generatedData.fullSpokenScript
   );
 
-  console.log("-----------------------------------");
+  console.log("----------------------------------------------");
 
   console.log("\nSCRIPT GENERATION REPORT");
 
@@ -680,7 +710,7 @@ IMPORTANT RULES:
   );
 
   console.log(
-    `Word count      : ${generatedData.wordCount}`
+    `Word count      : ${generatedData.wordCount} (Target: ${MIN_TARGET_WORDS}–${MAX_TARGET_WORDS} words for ~90s)`
   );
 
   console.log(
@@ -696,11 +726,11 @@ IMPORTANT RULES:
   );
 
   if (
-    generatedData.wordCount < 130 ||
-    generatedData.wordCount > 145
+    generatedData.wordCount < MIN_TARGET_WORDS ||
+    generatedData.wordCount > MAX_TARGET_WORDS
   ) {
     console.warn(
-      `Warning: Script has ${generatedData.wordCount} words. Target: 130–145.`
+      `Warning: Script has ${generatedData.wordCount} words. Target: ${MIN_TARGET_WORDS}–${MAX_TARGET_WORDS}.`
     );
   }
 
@@ -712,7 +742,7 @@ IMPORTANT RULES:
     console.log(
       `Script cost     : $${scriptCost.toFixed(6)} USD (~৳${(
         scriptCost * USD_TO_BDT
-      ).toFixed(3)} BDT)`
+      ).toFixed(4)} BDT)`
     );
   }
 
@@ -720,7 +750,7 @@ IMPORTANT RULES:
   console.log(`Saved: ${TEXT_OUTPUT}`);
 
   // --------------------------------------------------------------------------
-  // STEP 2: GENERATE VOICE WAV
+  // STEP 2: GENERATE VOICE WAV (~1.5 MINUTES)
   // --------------------------------------------------------------------------
 
   if (!GENERATE_VOICE_WAV) {
@@ -728,7 +758,7 @@ IMPORTANT RULES:
   }
 
   console.log("\n====================================================");
-  console.log(" STEP 2: CONVERTING SCRIPT TO AUDIO");
+  console.log(" STEP 2: CONVERTING SCRIPT TO 1.5-MIN VOICE WAV");
   console.log("====================================================");
 
   const ttsStart = Date.now();
@@ -796,8 +826,6 @@ IMPORTANT RULES:
   const audioDurationSeconds =
     pcmBuffer.length / (sampleRate * 2);
 
-  // Mono, 16-bit PCM = 2 bytes per sample.
-
   // --------------------------------------------------------------------------
   // TTS TOKEN REPORT
   // --------------------------------------------------------------------------
@@ -808,8 +836,13 @@ IMPORTANT RULES:
   const ttsInputTokens =
     ttsUsage.promptTokenCount ?? 0;
 
-  const ttsOutputTokens =
+  let ttsOutputTokens =
     ttsUsage.candidatesTokenCount ?? 0;
+
+  if (!ttsOutputTokens && audioDurationSeconds > 0) {
+    ttsOutputTokens = Math.ceil(audioDurationSeconds * 25);
+    ttsUsage.candidatesTokenCount = ttsOutputTokens;
+  }
 
   const ttsCost = formatCost(
     activeTtsModel,
@@ -837,7 +870,9 @@ IMPORTANT RULES:
   );
 
   console.log(
-    `Audio duration  : ${audioDurationSeconds.toFixed(2)} seconds`
+    `Audio duration  : ${audioDurationSeconds.toFixed(2)} seconds (~${(
+      audioDurationSeconds / 60
+    ).toFixed(2)} minutes)`
   );
 
   console.log(
@@ -856,13 +891,32 @@ IMPORTANT RULES:
     console.log(
       `TTS cost        : $${ttsCost.toFixed(6)} USD (~৳${(
         ttsCost * USD_TO_BDT
-      ).toFixed(3)} BDT)`
+      ).toFixed(4)} BDT)`
     );
   }
 
   console.log(`\nAudio saved     : ${AUDIO_OUTPUT}`);
 
-  // Open WAV automatically on Windows.
+  // --------------------------------------------------------------------------
+  // TOTAL COMBINED COST REPORT
+  // --------------------------------------------------------------------------
+
+  if (scriptCost !== null || ttsCost !== null) {
+    const totalUsd = (scriptCost ?? 0) + (ttsCost ?? 0);
+    const totalBdt = totalUsd * USD_TO_BDT;
+
+    console.log("\n====================================================");
+    console.log(" TOTAL COMBINED COST REPORT (1.5-MIN VOICE OBD)");
+    console.log("====================================================");
+    console.log(
+      `Single 90s run  : $${totalUsd.toFixed(6)} USD (~৳${totalBdt.toFixed(4)} BDT)`
+    );
+    console.log(
+      `Per 1,000 runs  : $${(totalUsd * 1000).toFixed(2)} USD (~৳${(totalBdt * 1000).toFixed(2)} BDT)`
+    );
+  }
+
+  // Open WAV automatically.
   if (OPEN_AUDIO_AFTER_GENERATION) {
     openAudioFile(AUDIO_OUTPUT);
   }
